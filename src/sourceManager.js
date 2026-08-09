@@ -18,10 +18,12 @@ class SourceManager {
     this.manager = null;
     this.initPromise = null;
     this._builtInSources = [
-      // 默认几个海外兼容性较好的音源（如果被封，用户可通过 LX_SOURCES 覆盖）
-      'https://cdn.jsdelivr.net/gh/lxmusics/lx-music-source@main/src/kw.js',
-      'https://cdn.jsdelivr.net/gh/lxmusics/lx-music-source@main/src/kg.js',
-      'https://cdn.jsdelivr.net/gh/lxmusics/lx-music-source@main/src/tx.js'
+      // 洛雪音乐社区聚合音源：每个脚本都支持多平台
+      // 仓库：https://github.com/pdone/lx-music-source（README 里的公开源）
+      'https://cdn.jsdelivr.net/gh/pdone/lx-music-source@main/ikun/latest.js',
+      'https://cdn.jsdelivr.net/gh/pdone/lx-music-source@main/sixyin/latest.js',
+      'https://cdn.jsdelivr.net/gh/pdone/lx-music-source@main/qdy/latest.js',
+      'https://cdn.jsdelivr.net/gh/pdone/lx-music-source@main/flower/latest.js'
     ];
   }
 
