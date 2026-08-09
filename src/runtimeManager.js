@@ -40,6 +40,44 @@ class RuntimeManager {
     return this.ready;
   }
 
+  // 友好 id：取 URL 文件名去掉扩展名（如 https://x/src/kg.js → "kg"）
+  static friendlyIdFromUrl(url) {
+    try {
+      const raw = String(url || '').split('/').pop().split('?')[0];
+      const noExt = raw.replace(/\.(js|ts|mjs|cjs)$/i, '').trim();
+      return noExt || ('src_' + Math.random().toString(36).slice(2, 8));
+    } catch (_) { return 'src_' + Math.random().toString(36).slice(2, 8); }
+  }
+
+  // 友好中文 name：按文件名 id 映射到常见音乐源中文名
+  static friendlyNameFromId(id, fallbackName) {
+    const i = String(id || '').toLowerCase();
+    const MAP = {
+      'kg': '酷狗(LX)', 'kugou': '酷狗(LX)',
+      'tx': 'QQ(LX)', 'qq': 'QQ(LX)', 'qqmusic': 'QQ(LX)',
+      'kw': '酷我(LX)', 'kuwo': '酷我(LX)',
+      'mg': '咪咕(LX)', 'migu': '咪咕(LX)',
+      'wy': '网易云(LX)', 'netease': '网易云(LX)', 'wangyi': '网易云(LX)', 'cloudmusic': '网易云(LX)',
+      'bd': '百度(LX)', 'baidu': '百度(LX)',
+      'joox': 'JOOX(LX)',
+      'yt': 'YouTube(LX)', 'youtube': 'YouTube(LX)',
+      'spotify': 'Spotify(LX)',
+      'pync': '南瓜(LX)', 'ng': '南瓜(LX)', 'nangua': '南瓜(LX)',
+      'feiyue': '飞跃(LX)', 'fy': '飞跃(LX)',
+      'hc': '花城(LX)', 'huacheng': '花城(LX)',
+      'ymkg': '秒开酷狗(LX)',
+      'ymkw': '秒开酷我(LX)',
+      'ymtx': '秒开QQ(LX)',
+    };
+    if (MAP[i]) return MAP[i];
+    if (fallbackName && String(fallbackName).trim()) {
+      const fn = String(fallbackName).trim();
+      // 如果 fallbackName 是 xx.js 就去掉扩展名再返回
+      return fn.replace(/\.(js|ts|mjs|cjs)$/i, '');
+    }
+    return id || '扩展音源';
+  }
+
   async addByUrl(url) {
     try {
       const controller = new AbortController();
@@ -51,9 +89,26 @@ class RuntimeManager {
         code = await resp.text();
       } finally { clearTimeout(t); }
       if (!code) throw new Error('脚本内容为空');
-      const rt = new LxRuntime({ scriptUrl: url, scriptName: url.split('/').pop().split('?')[0] || url });
+      const friendlyId = RuntimeManager.friendlyIdFromUrl(url);
+      const rawName = url.split('/').pop().split('?')[0] || url;
+      const rt = new LxRuntime({ scriptUrl: url, scriptName: RuntimeManager.friendlyNameFromId(friendlyId, rawName), id: friendlyId });
       const ok = await rt.loadFromCode(code);
       if (!ok) return false;
+      // 成功加载后，强制显式打开 enabled + initialized（constructor 默认 enabled=true，但这里做二次保险）
+      rt.enabled = true;
+      rt.initialized = true;
+      rt.initError = null;
+      // 若脚本里提供了 L.song.meta / L.song.name 等元数据，覆盖默认 name（优先脚本自报名字）
+      try {
+        const h = rt._handlers || null;
+        if (h && h.name && typeof h.name === 'string') rt.scriptName = h.name;
+        else if (h && h.meta && typeof h.meta.name === 'string') rt.scriptName = h.meta.name;
+        else if (h && typeof h.getQualities === 'function') { /* noop */ }
+      } catch(_) {}
+      // 友好 name 映射兜底：如果脚本自报名字还是 "kg.js" 这种，换成中文名
+      if (rt.scriptName && /\.(js|ts|mjs|cjs)$/i.test(rt.scriptName)) {
+        rt.scriptName = RuntimeManager.friendlyNameFromId(rt.id, rt.scriptName);
+      }
       // 达到上限时，淘汰最久未用的
       if (this.runtimes.size >= this._maxRuntimes) {
         let oldestKey = null; let oldestTs = Infinity;
@@ -64,7 +119,9 @@ class RuntimeManager {
       return true;
     } catch(e) {
       // 记录失败，写一个占位 runtime，status 会把它当错误显示
-      const rt = new LxRuntime({ scriptUrl: url, scriptName: url.split('/').pop().split('?')[0] || url });
+      const friendlyId = RuntimeManager.friendlyIdFromUrl(url);
+      const rawName = url.split('/').pop().split('?')[0] || url;
+      const rt = new LxRuntime({ scriptUrl: url, scriptName: RuntimeManager.friendlyNameFromId(friendlyId, rawName), id: friendlyId });
       rt.initialized = false;
       rt.initError = (e && e.message) || String(e);
       rt.enabled = false;
@@ -75,9 +132,18 @@ class RuntimeManager {
 
   getRuntime(id) {
     if (!id) return null;
+    // 精确 id 匹配（友好短名）
     const r = this.runtimes.get(id);
     if (r) return r;
-    // 没有找到则回退到第一个可用
+    // 兼容旧查找：按完整 URL（scriptUrl）匹配
+    const s = String(id);
+    for (const v of this.runtimes.values()) {
+      if (v.scriptUrl && v.scriptUrl === s) return v;
+      // 兼容：传的是 "kg.js" 这种 filename
+      const vBasename = (v.scriptUrl || '').split('/').pop().split('?')[0];
+      if (vBasename && vBasename === s) return v;
+    }
+    // 回退到第一个可用
     for (const v of this.runtimes.values()) if (v.initialized && v.enabled) return v;
     return null;
   }
