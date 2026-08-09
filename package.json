@@ -1,0 +1,19 @@
+{
+  "name": "lx-source-proxy-service",
+  "version": "1.0.0",
+  "private": true,
+  "description": "洛雪音乐源脚本执行代理服务（Render 免费 Web Service 部署）",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "cors": "^2.8.5",
+    "node-fetch": "^2.7.0"
+  }
+}

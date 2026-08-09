@@ -1,0 +1,23 @@
+services:
+  lx-source-proxy:
+    type: web
+    runtime: node
+    region: oregon  # 美国俄勒冈，对海外 CDN 音源更友好
+    plan: free      # 零成本核心
+    buildCommand: npm install
+    startCommand: node src/server.js
+    rootDir: ./
+    envVars:
+      - key: PORT
+        value: "3000"
+      - key: LX_TOKEN
+        generateValue: true  # Render 自动生成安全令牌；也可手动替换
+      - key: LX_INIT_TIMEOUT
+        value: "60000"
+      # 可选：自定义音源脚本 URL 列表（用英文逗号分隔）
+      # 留空时使用内置列表（来自 GitHub / jsDelivr CDN 的官方源）
+      - key: LX_SOURCES
+        value: ""
+    autoDeploy: yes
+    healthCheckPath: /healthz
+    pullRequestPreviewsEnabled: no
