@@ -21,15 +21,15 @@ function main() {
   app.use(express.urlencoded({ extended: false, limit: '128kb' }));
 
   // 访问控制：若环境变量设置 LX_TOKEN，则必须携带 Authorization: Bearer <token>
-  // Worker 端调用时走此机制
+  // Worker 端调用时走此机制；同时兼容两种旧写法（X-Source-Proxy-Token / x-lx-token）
   app.use((req, res, next) => {
     if (req.path === '/healthz') return next();
     if (req.path === '/') { res.type('text/plain; charset=utf-8'); res.send('lx-source-proxy-service running\n部署说明请查看项目 README.md\n'); return; }
     if (!LX_TOKEN) return next();
-    const auth = req.headers['authorization'] || req.headers['x-lx-token'] || '';
+    const auth = req.headers['authorization'] || req.headers['x-lx-token'] || req.headers['x-source-proxy-token'] || '';
     let token = '';
-    if (auth && /^Bearer\s+/i.test(auth)) token = auth.replace(/^Bearer\s+/i, '').trim();
-    else token = auth.trim();
+    if (auth && /^Bearer\s+/i.test(String(auth))) token = String(auth).replace(/^Bearer\s+/i, '').trim();
+    else token = String(auth || '').trim();
     if (token && token === LX_TOKEN) return next();
     res.status(401).json({ code: 401, msg: 'Unauthorized' });
   });
