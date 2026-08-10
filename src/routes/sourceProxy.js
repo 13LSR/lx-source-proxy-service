@@ -147,6 +147,114 @@ function buildRouter(sourceMgr) {
     }
   });
 
+  // 调试端点：把 server-side 搜索诊断日志直接塞进响应
+  router.get('/api/source/testsearch', ensure, async (req, res) => {
+    try {
+      const keyword = String(req.query.keyword || '').trim();
+      const source = String(req.query.source || 'ikun_latest').trim();
+      const quality = String(req.query.quality || '320k').trim();
+      if (!keyword) { res.json({ code: 400, msg: '缺 keyword' }); return; }
+      const rt = sourceMgr.getRuntime(source);
+      if (!rt) { res.json({ code: 404, msg: '音源 ' + source + ' 不存在' }); return; }
+      await rt.ensureInit();
+
+      const eh = (rt._lxApi && rt._lxApi._eventHandlers) || {};
+      const handlersSummary = {};
+      for (const k of Object.keys(eh)) {
+        const arr = Array.isArray(eh[k]) ? eh[k] : [];
+        handlersSummary[k] = {
+          count: arr.length,
+          types: arr.map((f,i) => {
+            const t = typeof f;
+            if (t !== 'function') return t;
+            const code = f.toString().slice(0, 180).replace(/\s+/g,' ');
+            return { i, mode: code.includes('switch(action)') || code.includes('switch (action)') ? 'switch-action' : (code.includes('ctx.action') ? 'ctx-action' : (code.includes('sourceType') ? 'sourceType' : 'other')) };
+          })
+        };
+      }
+
+      // 直接触发 request 事件（绕过包装器的所有 fallback 逻辑，模拟真实调用）
+      const diags = [];
+      const candidates = [
+        { actionSrc: 'qq', infoSrcType: 'qq', label: 'qq-full' },
+        { actionSrc: 'netease', infoSrcType: 'netease', label: 'netease-full' },
+        { actionSrc: 'kugou', infoSrcType: 'kugou', label: 'kugou-full' },
+        { actionSrc: 'kuwo', infoSrcType: 'kuwo', label: 'kuwo-full' },
+        { actionSrc: 'migu', infoSrcType: 'migu', label: 'migu-full' },
+        { actionSrc: 'all', infoSrcType: 'all', label: 'all-all' },
+        { actionSrc: 'tx', infoSrcType: 'tx', label: 'tx-abbr' },
+        { actionSrc: 'wy', infoSrcType: 'wy', label: 'wy-abbr' },
+        { actionSrc: 'kg', infoSrcType: 'kg', label: 'kg-abbr' },
+        { actionSrc: 'kw', infoSrcType: 'kw', label: 'kw-abbr' },
+        { actionSrc: 'mg', infoSrcType: 'mg', label: 'mg-abbr' },
+      ];
+      const reqHandlers = eh['request'] || [];
+      for (let i = 0; i < reqHandlers.length; i++) {
+        const h = reqHandlers[i];
+        if (typeof h !== 'function') continue;
+        for (const c of candidates) {
+          const ctx = { action: 'search', source: c.actionSrc, info: { keyword, sourceType: c.infoSrcType, quality } };
+          try {
+            const t0 = Date.now();
+            const ret = h(ctx);
+            let val;
+            if (ret && typeof ret.then === 'function') {
+              try { val = await Promise.race([ret, new Promise((_, rj) => setTimeout(() => rj(new Error('timeout-15s')), 15000))]); }
+              catch (e) { val = { __error: String(e && e.message || e) }; }
+            } else { val = ret; }
+            const ms = Date.now() - t0;
+            let summary;
+            if (val === null || val === undefined) summary = typeof val;
+            else if (typeof val === 'string') summary = 'str len=' + val.length;
+            else if (Array.isArray(val)) summary = 'array len=' + val.length + (val.length ? ' sampleKeys=' + (Object.keys(val[0]||{}).slice(0,5).join(',')) : '');
+            else if (typeof val === 'object') {
+              const keys = Object.keys(val).slice(0, 10);
+              const arrLike = keys.filter(k => Array.isArray(val[k])).map(k => `${k}[${val[k].length}]`).join(' ');
+              summary = 'obj{'+keys.join(',')+'}' + (arrLike ? ' arrays:' + arrLike : '') + (val.data ? ' typeof(data)='+typeof val.data : '');
+            } else summary = typeof val;
+            const hit = Array.isArray(val) && val.length > 0;
+            diags.push({ hIdx: i, label: c.label, ms, summary, hit });
+            if (hit) break;
+          } catch(e) {
+            diags.push({ hIdx: i, label: c.label, error: String(e && e.message || e).slice(0, 300) });
+          }
+        }
+      }
+
+      // 走正式包装器也测一下
+      let wrapResult = null;
+      try {
+        const wrapRet = await rt.search(keyword, 'all', quality);
+        wrapResult = Array.isArray(wrapRet) ? ('array len=' + wrapRet.length) : (typeof wrapRet);
+      } catch(e) {
+        wrapResult = 'error: ' + String(e && e.message || e).slice(0, 300);
+      }
+
+      res.json({
+        code: 200,
+        source,
+        keyword,
+        quality,
+        runtime: {
+          id: rt.id,
+          scriptName: rt.scriptName,
+          initialized: rt.initialized,
+          handlers: {
+            init: typeof (rt._handlers && rt._handlers.init),
+            search: typeof (rt._handlers && rt._handlers.search),
+            getSongUrl: typeof (rt._handlers && rt._handlers.getSongUrl),
+          },
+          wrapSearchResult: wrapResult,
+        },
+        eventHandlersSummary: handlersSummary,
+        diags,
+        msg: diags.some(d => d.hit) ? '🎉 至少有一个组合命中了！' : '⚠️ 所有组合均空'
+      });
+    } catch(e) {
+      res.status(500).json({ code: 500, msg: e.message || String(e), stack: e && e.stack ? String(e.stack).slice(0, 2000) : undefined });
+    }
+  });
+
   router.get('/api/source/search', ensure, async (req, res) => {
     try {
       const keyword = String(req.query.keyword || '').trim();
