@@ -12,6 +12,7 @@ const express = require('express');
 const SourceManager = require('../sourceManager.js');
 
 const L = require('../lxPrelude.js');
+const searchService = require('../searchService.js');
 
 function buildRouter(sourceMgr) {
   const router = express.Router();
@@ -269,20 +270,60 @@ function buildRouter(sourceMgr) {
       console.log(`[sourceProxy.search] keyword="${keyword}" source="${source}" sourceType="${sourceType}" quality="${quality}" page=${page} pageSize=${pageSize}`);
       if (!keyword) { res.json({ code: 200, data: [] }); return; }
 
-      let list;
+      let list = null;
+      let lxErr = null;
+      let usedFallback = false;
+
+      // 先尝试用 LX runtime 原生 search（IKun/QDY 等社区脚本大多只有 musicUrl，这一步通常空）
       if (source && source !== 'all') {
         const rt = sourceMgr.getRuntime(source);
-        if (!rt) { res.json({ code: 404, msg: '音源 ' + source + ' 不存在' }); return; }
+        if (rt) {
+          try {
+            list = await rt.search(keyword, sourceType, quality);
+            console.log(`[sourceProxy.search] rt.search() 返回: ${Array.isArray(list) ? 'array len=' + list.length : typeof list}`);
+          } catch(e) {
+            lxErr = String(e && e.message || e);
+            console.log(`[sourceProxy.search] rt.search() 抛异常: ${lxErr}`);
+            list = null;
+          }
+        }
+      } else {
         try {
-          list = await rt.search(keyword, sourceType, quality);
-          console.log(`[sourceProxy.search] rt.search() 返回: ${Array.isArray(list) ? 'array len=' + list.length : typeof list}`);
+          list = await sourceMgr.searchAll(keyword, sourceType, quality, { max: Math.min(60, page * pageSize + 20) });
         } catch(e) {
-          console.log(`[sourceProxy.search] rt.search() 抛异常: ${e && e.message || e}`);
+          lxErr = String(e && e.message || e);
+          list = null;
+        }
+      }
+
+      // 关键：如果 LX 脚本没搜到（null/空数组），就 fallback 到独立搜索服务（直接调各平台公开API）
+      // 因为 LX 脚本设计是「只提供 musicUrl 取播放链接，不负责搜索」，搜索由客户端或外部完成
+      if (!list || !Array.isArray(list) || list.length === 0) {
+        // sourceType=all：搜 4 大平台混合。非 all：搜指定平台
+        // 对于 source=xxx（ikun/sixyin/flower/qdy 等），sourceType 决定具体搜哪个平台的库，
+        // 然后播放时 song.sourceType 会被传给 LX musicUrl，这样 IKun/QDY 都能拿到对应平台的播放链接
+        const searchPlatform = (sourceType && sourceType !== 'all')
+          ? sourceType
+          : 'all';
+        try {
+          console.log(`[sourceProxy.search] LX 无结果，fallback 独立搜索 searchService platform=${searchPlatform}`);
+          const rawFallback = await searchService.search(searchPlatform, keyword, page, pageSize);
+          // 给每条结果加上 lxSource=source，让后续播放请求知道走哪个 LX runtime 去取 musicUrl
+          list = rawFallback.map((item) => Object.assign({}, item, {
+            lxSource: (source && source !== 'all') ? source : null,
+            _origin: 'searchService',
+          }));
+          usedFallback = true;
+        } catch(e) {
+          console.log(`[sourceProxy.search] fallback searchService 异常: ${e && e.message || e}`);
           list = [];
         }
       } else {
-        list = await sourceMgr.searchAll(keyword, sourceType, quality, { max: Math.min(60, page * pageSize + 20) });
+        // LX 脚本原生搜到的，打个 origin 标记
+        list = list.map((item) => Object.assign({}, item, { _origin: 'lx-script' }));
       }
+
+      // 分页（fallback 时 searchService 已按 page/pageSize 返回过正确分页，这里再切一次无害）
       const start = (page - 1) * pageSize;
       const end = start + pageSize;
       const paged = (list || []).slice(start, end);
@@ -292,7 +333,9 @@ function buildRouter(sourceMgr) {
         meta: {
           total: (list || []).length,
           page,
-          pageSize
+          pageSize,
+          usedFallback,
+          lxError: lxErr ? lxErr.slice(0, 200) : null,
         }
       });
     } catch(e) {
