@@ -210,6 +210,36 @@ class LxRuntime {
       fetch: fetch,
       AbortController: global.AbortController,
       Headers: fetch.Headers,
+      // 补全 ES6+ 全局对象（混淆/webpack 脚本依赖）
+      Promise: global.Promise,
+      Symbol: global.Symbol,
+      Map: global.Map,
+      Set: global.Set,
+      WeakMap: global.WeakMap,
+      WeakSet: global.WeakSet,
+      Reflect: global.Reflect,
+      Proxy: global.Proxy,
+      Error: global.Error,
+      TypeError: global.TypeError,
+      RangeError: global.RangeError,
+      SyntaxError: global.SyntaxError,
+      ReferenceError: global.ReferenceError,
+      ArrayBuffer: global.ArrayBuffer,
+      Uint8Array: global.Uint8Array,
+      Uint16Array: global.Uint16Array,
+      Uint32Array: global.Uint32Array,
+      Int8Array: global.Int8Array,
+      Int16Array: global.Int16Array,
+      Int32Array: global.Int32Array,
+      Float32Array: global.Float32Array,
+      Float64Array: global.Float64Array,
+      DataView: global.DataView,
+      TextEncoder: global.TextEncoder || require('util').TextEncoder,
+      TextDecoder: global.TextDecoder || require('util').TextDecoder,
+      URL: global.URL,
+      URLSearchParams: global.URLSearchParams,
+      navigator: { userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) lx-music-desktop/1.0.0' },
+      location: { href: 'https://localhost', origin: 'https://localhost' },
       L: L,
       QUALITY: L.QUALITY,
       lx: lxApi,
@@ -221,6 +251,10 @@ class LxRuntime {
       module: { exports: {} },
       exports: undefined
     };
+    sandbox.globalThis = sandbox;
+    sandbox.global = sandbox;
+    sandbox.window = sandbox;
+    sandbox.self = sandbox;
     sandbox.__m__ = sandbox.module;
     sandbox.exports = sandbox.module.exports;
     sandbox.module = sandbox.module;
