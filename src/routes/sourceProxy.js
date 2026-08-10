@@ -24,26 +24,41 @@ function buildRouter(sourceMgr) {
     next();
   };
 
-  router.get('/api/source/status', (req, res) => {
+  router.get('/api/source/status', async (req, res) => {
+    // 最多等待 12 秒让首次加载结束（冷启动阶段网络慢但会成功）
+    const waitMs = Number(req.query.wait) || 12000;
+    if (sourceMgr && typeof sourceMgr.waitReady === 'function') {
+      try { await sourceMgr.waitReady(waitMs); } catch(_) {}
+    }
+    const started = sourceMgr && sourceMgr.manager ? (sourceMgr.manager.startedAt || Date.now()) : Date.now();
     const ok = sourceMgr && sourceMgr.isReady();
     const count = sourceMgr ? sourceMgr.size() : 0;
-    const ready = ok && count > 0;
+    const listRaw = (sourceMgr && sourceMgr.list) ? sourceMgr.list() : [];
+    const validCount = listRaw.filter(x => x && x.enabled && !x.error).length;
+    const failedCount = listRaw.filter(x => x && x.error).length;
+    const ready = ok && validCount > 0;
     const err = sourceMgr ? sourceMgr.readyError() : '';
-    const startedMs = sourceMgr && sourceMgr.manager ? sourceMgr.manager.startedAt : Date.now();
+    const firstError = listRaw.find(x => x && x.error);
     res.json({
       code: 200,
       data: {
         ready,
-        sourceCount: count,
-        initializedRuntimes: count,
-        uptimeMs: Date.now() - startedMs,
-        message: err || (ready ? 'ok' : (sourceMgr ? '音源加载中' : '未启动')),
+        sourceCount: validCount,              // 前端展示"音源数量"：只算成功启用的
+        totalRuntimes: count,                 // 实际 runtimes.size（含失败占位）
+        failedRuntimes: failedCount,
+        initializedRuntimes: validCount,
+        uptimeMs: Date.now() - started,
+        message: err
+          || (ready ? 'ok' : (firstError && firstError.error ? String(firstError.error).slice(0, 120) : (sourceMgr ? '音源加载中或全部加载失败' : '未启动'))),
+        errors: listRaw.filter(x => x && x.error).map(x => ({ id: x.id, name: x.name, error: String(x.error || '').slice(0, 200) })),
         ok: ready
       }
     });
   });
 
-  router.get('/api/source/list', ensure, (req, res) => {
+  router.get('/api/source/list', ensure, async (req, res) => {
+    // 最多等待 3 秒（冷启动时让 runtimes 先写入）
+    if (typeof sourceMgr.waitReady === 'function') try { await sourceMgr.waitReady(3000); } catch(_) {}
     const list = sourceMgr.list();
     res.json({
       code: 200,
@@ -52,6 +67,35 @@ function buildRouter(sourceMgr) {
         count: list.length
       }
     });
+  });
+
+  // 重新加载：POST /api/source/reload   body { sources?: string[] }
+  // - sources 不传：重新加载默认列表（_builtInSources 或 LX_SOURCES env）
+  // - sources 传：覆盖成用户自定义列表（管理后台"预置音源脚本 URL"）
+  router.post('/api/source/reload', ensure, express.json({ limit: '64kb' }), async (req, res) => {
+    try {
+      const body = req.body || {};
+      const sourceList = Array.isArray(body.sources) ? body.sources.map(x => String(x || '').trim()).filter(Boolean) : null;
+      const ok = await sourceMgr.reload(sourceList || undefined);
+      if (typeof sourceMgr.waitReady === 'function') try { await sourceMgr.waitReady(15000); } catch(_) {}
+      const list = sourceMgr.list();
+      const validCount = list.filter(x => x && x.enabled && !x.error).length;
+      const failed = list.filter(x => x && x.error).length;
+      res.json({
+        code: 200,
+        data: {
+          ok: !!ok,
+          sourceCount: validCount,
+          failedCount: failed,
+          list,
+          message: ok
+            ? (validCount > 0 ? `ok · ${validCount} loaded · ${failed} failed` : 'loaded but all sources failed')
+            : 'reload rejected'
+        }
+      });
+    } catch (e) {
+      res.status(500).json({ code: 500, msg: e && e.message ? e.message : String(e) });
+    }
   });
 
   router.get('/api/source/search', ensure, async (req, res) => {

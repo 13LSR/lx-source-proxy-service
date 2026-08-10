@@ -63,6 +63,24 @@ class SourceManager {
       new Promise(resolve => setTimeout(() => resolve(false), t))
     ]);
   }
+
+  // 重新加载音源：sources 不传则复用默认（_builtInSources 或 env LX_SOURCES）；传数组则覆盖为自定义列表
+  async reload(sources) {
+    if (!this.manager) return this.start({ sources: Array.isArray(sources) && sources.length ? sources : undefined });
+    let useList = null;
+    if (Array.isArray(sources) && sources.length) {
+      useList = sources;
+    } else {
+      const fromEnv = parseSourceList(process.env.LX_SOURCES || '');
+      useList = fromEnv.length ? fromEnv : this._builtInSources;
+    }
+    // 如果 custom _defaultSources 要更新到 RuntimeManager._defaultSources
+    try { this.manager._defaultSources = useList; } catch(_) {}
+    const ok = await this.manager.reload(useList);
+    this.initPromise = this.manager.loadingPromise || Promise.resolve(ok);
+    this.initPromise.catch(() => {});
+    return true;
+  }
 }
 
 module.exports = SourceManager;

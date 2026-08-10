@@ -40,6 +40,17 @@ class RuntimeManager {
     return this.ready;
   }
 
+  // 强制重新加载：清空全部 runtimes，重跑 addByUrl（可传新 sources 覆盖默认）
+  async reload(sources) {
+    this.loadingPromise = null;
+    this.ready = false;
+    this.readyError = '';
+    this.runtimes.clear();
+    const list = Array.isArray(sources) && sources.length ? sources : (this._defaultSources || []);
+    if (!list.length) return false;
+    return this.loadAll(list);
+  }
+
   // 友好 id：取 URL 文件名去掉扩展名（如 https://x/src/kg.js → "kg"）
   static friendlyIdFromUrl(url) {
     try {
