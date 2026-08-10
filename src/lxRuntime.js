@@ -384,9 +384,17 @@ class LxRuntime {
                 ...requestHandlers.map(h => ({ h, mode: 'request' })),
               ];
               let hIdx = 0, sIdx = 0;
+              let lastErr = null;
+              let lastHint = '';
 
               const tryNext = () => {
-                if (hIdx >= allHandlers.length) { reject(new Error('无可用 musicUrl handler')); return; }
+                if (hIdx >= allHandlers.length) {
+                  const msg = lastErr
+                    ? ('musicUrl 全部失败: ' + (lastHint || '[无细节]') + ' - ' + String(typeof lastErr === 'object' ? (lastErr.message || lastErr) : lastErr).slice(0, 200))
+                    : '无可用 musicUrl handler';
+                  reject(new Error(msg));
+                  return;
+                }
                 if (sIdx >= srcCandidates.length) { hIdx++; sIdx = 0; tryNext(); return; }
                 const { h, mode } = allHandlers[hIdx];
                 const src = srcCandidates[sIdx++];
@@ -394,12 +402,14 @@ class LxRuntime {
                 const ctx = mode === 'direct'
                   ? { ...myInfo, source: src }
                   : { action: 'musicUrl', source: src, info: myInfo };
+                lastHint = `h=${hIdx}/${allHandlers.length} src=${src} mode=${mode}`;
                 try {
                   const ret = h(ctx);
                   const finish = (r) => { if (hasValidUrl(r)) resolve(r); else tryNext(); };
-                  if (ret && typeof ret.then === 'function') ret.then(finish, () => tryNext());
+                  const onRej = (e) => { lastErr = e; tryNext(); };
+                  if (ret && typeof ret.then === 'function') ret.then(finish, onRej);
                   else finish(ret);
-                } catch(e) { tryNext(); }
+                } catch(e) { lastErr = e; tryNext(); }
               };
               tryNext();
             });

@@ -20,7 +20,8 @@ class SourceManager {
     this._builtInSources = [
       // 洛雪音乐社区聚合音源：每个脚本都支持多平台
       // 仓库：https://github.com/pdone/lx-music-source（README 里的公开源）
-      'https://cdn.jsdelivr.net/gh/pdone/lx-music-source@main/ikun/latest.js',
+      // 注意：IKun latest.js 仅支持 kw/wy/git；用 IKun v6 才是全平台 kg/tx/wy/kw/mg
+      'https://cdn.jsdelivr.net/gh/pdone/lx-music-source@main/ikun/6.js',
       'https://cdn.jsdelivr.net/gh/pdone/lx-music-source@main/sixyin/latest.js',
       'https://cdn.jsdelivr.net/gh/pdone/lx-music-source@main/qdy/latest.js',
       'https://cdn.jsdelivr.net/gh/pdone/lx-music-source@main/flower/latest.js'
