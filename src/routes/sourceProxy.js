@@ -208,9 +208,12 @@ function buildRouter(sourceMgr) {
             else if (typeof val === 'string') summary = 'str len=' + val.length;
             else if (Array.isArray(val)) summary = 'array len=' + val.length + (val.length ? ' sampleKeys=' + (Object.keys(val[0]||{}).slice(0,5).join(',')) : '');
             else if (typeof val === 'object') {
-              const keys = Object.keys(val).slice(0, 10);
-              const arrLike = keys.filter(k => Array.isArray(val[k])).map(k => `${k}[${val[k].length}]`).join(' ');
-              summary = 'obj{'+keys.join(',')+'}' + (arrLike ? ' arrays:' + arrLike : '') + (val.data ? ' typeof(data)='+typeof val.data : '');
+              if (val.__error) { summary = 'ERROR: ' + String(val.__error).slice(0, 500); }
+              else {
+                const keys = Object.keys(val).slice(0, 10);
+                const arrLike = keys.filter(k => Array.isArray(val[k])).map(k => `${k}[${val[k].length}]`).join(' ');
+                summary = 'obj{'+keys.join(',')+'}' + (arrLike ? ' arrays:' + arrLike : '') + (val.data ? ' typeof(data)='+typeof val.data : '');
+              }
             } else summary = typeof val;
             const hit = Array.isArray(val) && val.length > 0;
             diags.push({ hIdx: i, label: c.label, ms, summary, hit });
