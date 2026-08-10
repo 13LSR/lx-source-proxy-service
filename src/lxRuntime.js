@@ -256,6 +256,20 @@ class LxRuntime {
       getMusicUrl: null
     }, target);
 
+    // 平台名 → LX 音源脚本 source 标识映射
+    const platformToLxSource = {
+      'qq': 'tx', 'tx': 'tx',
+      'kg': 'kg', 'kugou': 'kg',
+      'kw': 'kw', 'kuwo': 'kw',
+      'wy': 'wy', 'netease': 'wy', '163': 'wy',
+      'mg': 'mg', 'migu': 'mg',
+      'all': 'all'
+    };
+    const normalizeSource = (s) => {
+      const k = String(s || '').trim().toLowerCase();
+      return platformToLxSource[k] || k || 'all';
+    };
+
     // 事件驱动模式：脚本通过 lx.on(EVENT_NAMES.request, handler) 注册
     // 将注册的 handler 提取出来，包装成 getSongUrl / search 等标准方法
     const lxApi = this._lxApi;
@@ -267,29 +281,63 @@ class LxRuntime {
       const requestHandlers = eh['request'] || [];
       if (requestHandlers.length > 0) {
         const self = this;
+        // 判断 handler 返回值是否包含有效 URL
+        const hasValidUrl = (r) => {
+          if (!r) return false;
+          if (typeof r === 'string') return !!r;
+          if (typeof r !== 'object') return false;
+          if (r.url && typeof r.url === 'string' && r.url.length > 0) return true;
+          if (r.url_redirect && typeof r.url_redirect === 'string' && r.url_redirect.length > 0) return true;
+          if (r.fileUrl && typeof r.fileUrl === 'string' && r.fileUrl.length > 0) return true;
+          if (r.data && typeof r.data === 'object') {
+            if (r.data.url && typeof r.data.url === 'string' && r.data.url.length > 0) return true;
+          }
+          return false;
+        };
+
         // 包装成 getSongUrl：action = "musicUrl"
         if (!this._handlers.getSongUrl) {
           this._handlers.getSongUrl = function(song, quality) {
             return new Promise((resolve, reject) => {
+              const songLike = self._songToLx(song);
+              const rawSrc = songLike.sourceType || songLike.platform || '';
+              const lxSource = normalizeSource(rawSrc);
               const info = {
-                musicInfo: self._songToLx(song),
+                musicInfo: songLike,
                 type: quality
               };
-              const ctx = { action: 'musicUrl', source: 'all', info };
-              // 找第一个能处理的 handler
-              let idx = 0;
+              // 候选 source 列表：先试搜索结果自带的，再试通用备选
+              const srcCandidates = [lxSource, 'tx', 'wy', 'kw', 'kg', 'mg', 'git', 'all']
+                .filter(Boolean)
+                .filter((v, i, a) => a.indexOf(v) === i); // 去重
+
+              let hIdx = 0;
+              let sIdx = 0;
+
               const tryNext = () => {
-                if (idx >= requestHandlers.length) {
+                if (hIdx >= requestHandlers.length) {
                   reject(new Error('无可用 handler 处理 musicUrl'));
                   return;
                 }
-                const h = requestHandlers[idx++];
+                if (sIdx >= srcCandidates.length) {
+                  hIdx++;
+                  sIdx = 0;
+                  tryNext();
+                  return;
+                }
+                const h = requestHandlers[hIdx];
+                const ctx = { action: 'musicUrl', source: srcCandidates[sIdx], info };
+                sIdx++;
                 try {
                   const ret = h(ctx);
+                  const finish = (r) => {
+                    if (hasValidUrl(r)) resolve(r);
+                    else tryNext();
+                  };
                   if (ret && typeof ret.then === 'function') {
-                    ret.then(resolve, tryNext);
+                    ret.then(finish, () => { tryNext(); });
                   } else {
-                    resolve(ret);
+                    finish(ret);
                   }
                 } catch(e) {
                   tryNext();
@@ -303,8 +351,9 @@ class LxRuntime {
         if (!this._handlers.search) {
           this._handlers.search = function(keyword, sourceType, quality) {
             return new Promise((resolve, reject) => {
-              const info = { keyword, sourceType, quality };
-              const ctx = { action: 'search', source: sourceType || 'all', info };
+              const lxSource = normalizeSource(sourceType);
+              const info = { keyword, sourceType: lxSource, quality };
+              const ctx = { action: 'search', source: lxSource, info };
               const handler = requestHandlers.find(h => {
                 try { return h && h.toString().includes('search'); } catch(_) { return false; }
               }) || requestHandlers[0];
@@ -422,8 +471,10 @@ class LxRuntime {
   _songToLx(song) {
     song = song || {};
     // 把业务端的 songId/name/singer 适配到 LX 脚本需要的字段
+    const id = song.id || song.songId || song.hash || '';
     return {
-      id: song.id || song.songId || song.hash || '',
+      id: id,
+      songmid: id,
       hash: song.hash || song.id || '',
       songId: song.songId || song.id || '',
       name: song.name || song.songName || '',
@@ -434,6 +485,7 @@ class LxRuntime {
       cover: song.cover || song.picUrl || song.img || '',
       duration: Number(song.duration || song.dt || 0) || 0,
       sourceType: song.sourceType || 'all',
+      platform: song.platform || song.sourceType || '',
       quality: song.quality || null,
       interval: song.interval || null,
       _raw: song._raw || song

@@ -149,7 +149,9 @@ function buildRouter(sourceMgr) {
         singer: req.query.singer || req.query.artist || '',
         albumName: req.query.albumName || req.query.album || '',
         albumId: req.query.albumId || '',
-        cover: req.query.cover || ''
+        cover: req.query.cover || '',
+        sourceType: req.query.sourceType || '',
+        platform: req.query.platform || ''
       };
       const chain = [
         quality,
