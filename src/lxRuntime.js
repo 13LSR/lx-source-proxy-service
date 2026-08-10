@@ -353,18 +353,69 @@ class LxRuntime {
             return new Promise((resolve, reject) => {
               const lxSource = normalizeSource(sourceType);
               const info = { keyword, sourceType: lxSource, quality };
-              const ctx = { action: 'search', source: lxSource, info };
-              const handler = requestHandlers.find(h => {
-                try { return h && h.toString().includes('search'); } catch(_) { return false; }
-              }) || requestHandlers[0];
-              try {
-                const ret = handler(ctx);
-                if (ret && typeof ret.then === 'function') {
-                  ret.then(resolve, reject);
-                } else {
-                  resolve(Array.isArray(ret) ? ret : []);
+              // 候选 source 列表（search 也做平台多源 fallback，避免 source 不对导致 0 结果）
+              const srcCandidates = [lxSource, 'tx', 'wy', 'kw', 'kg', 'mg', 'all']
+                .filter(Boolean)
+                .filter((v, i, a) => a.indexOf(v) === i);
+              let hIdx = 0;
+              let sIdx = 0;
+
+              const isSearchResult = (r) => {
+                if (Array.isArray(r) && r.length > 0) return true;
+                if (!r || typeof r !== 'object') return false;
+                if (Array.isArray(r.data) && r.data.length > 0) return true;
+                if (Array.isArray(r.list) && r.list.length > 0) return true;
+                if (r.data && typeof r.data === 'object') {
+                  if (Array.isArray(r.data.list) && r.data.list.length > 0) return true;
+                  if (Array.isArray(r.data.songs) && r.data.songs.length > 0) return true;
                 }
-              } catch(e) { resolve([]); }
+                return false;
+              };
+              const extractSearchList = (r) => {
+                if (Array.isArray(r)) return r;
+                if (Array.isArray(r && r.data)) return r.data;
+                if (Array.isArray(r && r.list)) return r.list;
+                if (r && r.data && Array.isArray(r.data.list)) return r.data.list;
+                if (r && r.data && Array.isArray(r.data.songs)) return r.data.songs;
+                if (r && Array.isArray(r.result)) return r.result;
+                return [];
+              };
+              const tryNext = () => {
+                if (hIdx >= requestHandlers.length) {
+                  resolve([]);
+                  return;
+                }
+                if (sIdx >= srcCandidates.length) {
+                  hIdx++;
+                  sIdx = 0;
+                  tryNext();
+                  return;
+                }
+                const h = requestHandlers[hIdx];
+                const trySrc = srcCandidates[sIdx];
+                const ctx = { action: 'search', source: trySrc, info };
+                sIdx++;
+                try {
+                  const ret = h(ctx);
+                  const finish = (r) => {
+                    if (isSearchResult(r)) {
+                      const arr = extractSearchList(r);
+                      if (arr.length > 0) resolve(arr);
+                      else tryNext();
+                    } else {
+                      tryNext();
+                    }
+                  };
+                  if (ret && typeof ret.then === 'function') {
+                    ret.then(finish, () => { tryNext(); });
+                  } else {
+                    finish(ret);
+                  }
+                } catch(e) {
+                  tryNext();
+                }
+              };
+              tryNext();
             });
           };
         }
