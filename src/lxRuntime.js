@@ -270,18 +270,25 @@ class LxRuntime {
       return platformToLxSource[k] || k || 'all';
     };
 
-    // 事件驱动模式：脚本通过 lx.on(EVENT_NAMES.request, handler) 注册
-    // 将注册的 handler 提取出来，包装成 getSongUrl / search 等标准方法
+    // 事件驱动模式：脚本通过 lx.on(...) 注册各种事件处理器
+    // 支持两种模式：
+    //   1) lx.on('request', (ctx) => { if(ctx.action==='search')... })  — 统一入口
+    //   2) lx.on('search', handler) / lx.on('musicUrl', handler)      — 分事件注册
     const lxApi = this._lxApi;
     if (lxApi && lxApi._eventHandlers) {
       const eh = lxApi._eventHandlers;
-      this._eventHandlers = eh; // 保存引用
+      this._eventHandlers = eh;
 
-      // 检查是否注册了 "request" 事件（IKun/Flower/Sixyin 都用这个）
-      const requestHandlers = eh['request'] || [];
-      if (requestHandlers.length > 0) {
+      // 收集所有可用 handler（兼容两种注册模式）
+      const requestHandlers = eh['request'] || [];          // 统一入口模式
+      const directSearchHandlers = eh['search'] || [];     // 直接 search
+      const directMusicUrlHandlers = eh['musicUrl'] || eh['songUrl'] || eh['getSongUrl'] || []; // 直接 musicUrl
+
+      console.log(`[lx-init] 事件处理器: request=${requestHandlers.length} search=${directSearchHandlers.length} musicUrl=${directMusicUrlHandlers.length}`);
+
+      const anyHandlers = requestHandlers.length + directSearchHandlers.length + directMusicUrlHandlers.length;
+      if (anyHandlers > 0) {
         const self = this;
-        // 判断 handler 返回值是否包含有效 URL
         const hasValidUrl = (r) => {
           if (!r) return false;
           if (typeof r === 'string') return !!r;
@@ -295,70 +302,62 @@ class LxRuntime {
           return false;
         };
 
-        // 包装成 getSongUrl：action = "musicUrl"
+        // 包装成 getSongUrl
         if (!this._handlers.getSongUrl) {
           this._handlers.getSongUrl = function(song, quality) {
             return new Promise((resolve, reject) => {
               const songLike = self._songToLx(song);
               const rawSrc = songLike.sourceType || songLike.platform || '';
               const lxSource = normalizeSource(rawSrc);
-              const info = {
-                musicInfo: songLike,
-                type: quality
-              };
-              // 候选 source 列表：先试搜索结果自带的，再试通用备选
+              const info = { musicInfo: songLike, type: quality };
               const srcCandidates = [lxSource, 'tx', 'wy', 'kw', 'kg', 'mg', 'git', 'all']
-                .filter(Boolean)
-                .filter((v, i, a) => a.indexOf(v) === i); // 去重
+                .filter(Boolean).filter((v, i, a) => a.indexOf(v) === i);
 
-              let hIdx = 0;
-              let sIdx = 0;
+              // 合并两种 handler：直接 musicUrl handler + request 模式 handler
+              const allHandlers = [
+                ...directMusicUrlHandlers.map(h => ({ h, mode: 'direct' })),
+                ...requestHandlers.map(h => ({ h, mode: 'request' })),
+              ];
+              let hIdx = 0, sIdx = 0;
 
               const tryNext = () => {
-                if (hIdx >= requestHandlers.length) {
-                  reject(new Error('无可用 handler 处理 musicUrl'));
-                  return;
-                }
-                if (sIdx >= srcCandidates.length) {
-                  hIdx++;
-                  sIdx = 0;
-                  tryNext();
-                  return;
-                }
-                const h = requestHandlers[hIdx];
-                const ctx = { action: 'musicUrl', source: srcCandidates[sIdx], info };
-                sIdx++;
+                if (hIdx >= allHandlers.length) { reject(new Error('无可用 musicUrl handler')); return; }
+                if (sIdx >= srcCandidates.length) { hIdx++; sIdx = 0; tryNext(); return; }
+                const { h, mode } = allHandlers[hIdx];
+                const src = srcCandidates[sIdx++];
+                const ctx = mode === 'direct'
+                  ? { ...info, source: src }
+                  : { action: 'musicUrl', source: src, info };
                 try {
                   const ret = h(ctx);
-                  const finish = (r) => {
-                    if (hasValidUrl(r)) resolve(r);
-                    else tryNext();
-                  };
-                  if (ret && typeof ret.then === 'function') {
-                    ret.then(finish, () => { tryNext(); });
-                  } else {
-                    finish(ret);
-                  }
-                } catch(e) {
-                  tryNext();
-                }
+                  const finish = (r) => { if (hasValidUrl(r)) resolve(r); else tryNext(); };
+                  if (ret && typeof ret.then === 'function') ret.then(finish, () => tryNext());
+                  else finish(ret);
+                } catch(e) { tryNext(); }
               };
               tryNext();
             });
           };
         }
-        // 包装成 search：action = "search"
+
+        // 包装成 search
         if (!this._handlers.search) {
           this._handlers.search = function(keyword, sourceType, quality) {
             return new Promise((resolve, reject) => {
               const lxSource = normalizeSource(sourceType);
               const info = { keyword, sourceType: lxSource, quality };
-              // 候选 source 列表（search 也做平台多源 fallback，避免 source 不对导致 0 结果）
               const srcCandidates = [lxSource, 'tx', 'wy', 'kw', 'kg', 'mg', 'all']
-                .filter(Boolean)
-                .filter((v, i, a) => a.indexOf(v) === i);
-              let hIdx = 0;
-              let sIdx = 0;
+                .filter(Boolean).filter((v, i, a) => a.indexOf(v) === i);
+
+              // 合并两种 handler：直接 search handler + request 模式 handler
+              const allHandlers = [
+                ...directSearchHandlers.map(h => ({ h, mode: 'direct' })),
+                ...requestHandlers.map(h => ({ h, mode: 'request' })),
+              ];
+              console.log(`[lx-search-wrap] keyword="${keyword}" lxSource="${lxSource}" quality="${quality}" totalHandlers=${allHandlers.length} (direct=${directSearchHandlers.length} request=${requestHandlers.length}) srcCandidates=${JSON.stringify(srcCandidates)}`);
+
+              let hIdx = 0, sIdx = 0;
+              let totalAttempts = 0;
 
               const isSearchResult = (r) => {
                 if (Array.isArray(r) && r.length > 0) return true;
@@ -380,38 +379,40 @@ class LxRuntime {
                 if (r && Array.isArray(r.result)) return r.result;
                 return [];
               };
+
               const tryNext = () => {
-                if (hIdx >= requestHandlers.length) {
+                if (hIdx >= allHandlers.length) {
+                  console.log(`[lx-search-wrap] ❌ 所有 ${allHandlers.length} 个 handler 均已尝试（共 ${totalAttempts} 次尝试），返回空`);
                   resolve([]);
                   return;
                 }
-                if (sIdx >= srcCandidates.length) {
-                  hIdx++;
-                  sIdx = 0;
-                  tryNext();
-                  return;
-                }
-                const h = requestHandlers[hIdx];
-                const trySrc = srcCandidates[sIdx];
-                const ctx = { action: 'search', source: trySrc, info };
-                sIdx++;
+                if (sIdx >= srcCandidates.length) { hIdx++; sIdx = 0; tryNext(); return; }
+                const { h, mode } = allHandlers[hIdx];
+                const trySrc = srcCandidates[sIdx++];
+                const ctx = mode === 'direct'
+                  ? { ...info, source: trySrc }
+                  : { action: 'search', source: trySrc, info };
+                totalAttempts++;
+                console.log(`[lx-search-wrap] → [${mode}] handler#${hIdx} source="${trySrc}"`);
                 try {
                   const ret = h(ctx);
                   const finish = (r) => {
-                    if (isSearchResult(r)) {
+                    const isArr = Array.isArray(r);
+                    const isObj = r && typeof r === 'object';
+                    const summary = isArr ? `array[${r.length}]` : (isObj ? `obj{${Object.keys(r).join(',')}}` : typeof r);
+                    const ok = isSearchResult(r);
+                    console.log(`[lx-search-wrap] [${mode}] handler#${hIdx} source="${trySrc}" → ${summary} → ${ok ? '✅命中' : '❌空'}`);
+                    if (ok) {
                       const arr = extractSearchList(r);
-                      if (arr.length > 0) resolve(arr);
+                      if (arr.length > 0) { console.log(`[lx-search-wrap] 🎯 成功: ${arr.length} 条`); resolve(arr); return; }
                       else tryNext();
-                    } else {
-                      tryNext();
-                    }
+                    } else tryNext();
                   };
                   if (ret && typeof ret.then === 'function') {
-                    ret.then(finish, () => { tryNext(); });
-                  } else {
-                    finish(ret);
-                  }
+                    ret.then(finish, () => { console.log(`[lx-search-wrap] [${mode}] handler#${hIdx} source="${trySrc}" 被reject`); tryNext(); });
+                  } else finish(ret);
                 } catch(e) {
+                  console.log(`[lx-search-wrap] [${mode}] handler#${hIdx} source="${trySrc}" 抛异常: ${e && e.message || e}`);
                   tryNext();
                 }
               };
@@ -419,6 +420,8 @@ class LxRuntime {
             });
           };
         }
+      } else {
+        console.log(`[lx-init] ⚠️ 无任何事件处理器！request=${requestHandlers.length} search=${directSearchHandlers.length} musicUrl=${directMusicUrlHandlers.length}。脚本可能不支持事件驱动模式。`);
       }
     }
 
@@ -442,9 +445,14 @@ class LxRuntime {
 
   async search(keyword, sourceType, quality) {
     await this.ensureInit();
-    if (!this._handlers || typeof this._handlers.search !== 'function') return [];
+    console.log(`[lx-search-runtime] search() called: keyword="${keyword}" sourceType="${sourceType}" quality="${quality}" id="${this.id}" handlers.search=${typeof (this._handlers && this._handlers.search)} eventHandlers.request=${(this._lxApi && this._lxApi._eventHandlers && this._lxApi._eventHandlers.request && this._lxApi._eventHandlers.request.length) || 0}`);
+    if (!this._handlers || typeof this._handlers.search !== 'function') {
+      console.log('[lx-search-runtime] ❌ handlers.search 不存在，返回空');
+      return [];
+    }
     const q = L.resolveQuality(quality);
     const ret = await this._handlers.search(keyword || '', sourceType || 'all', q);
+    console.log(`[lx-search-runtime] handlers.search 返回: ${Array.isArray(ret) ? 'array len=' + ret.length : (ret && typeof ret === 'object' ? 'object keys=' + Object.keys(ret).join(',') : typeof ret)}`);
     if (!ret) return [];
     const arr = Array.isArray(ret) ? ret : (Array.isArray(ret.data) ? ret.data : (Array.isArray(ret.list) ? ret.list : []));
     return this._normalizeSearchResult(arr, sourceType || 'all');

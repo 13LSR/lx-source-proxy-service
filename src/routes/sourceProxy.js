@@ -98,6 +98,55 @@ function buildRouter(sourceMgr) {
     }
   });
 
+  router.get('/api/source/debug/:id?', ensure, async (req, res) => {
+    try {
+      const id = req.params.id;
+      if (id) {
+        const rt = sourceMgr.getRuntime(id);
+        if (!rt) { res.json({ code: 404, msg: '音源不存在' }); return; }
+        // 确保已初始化
+        try { await rt.ensureInit && rt.ensureInit(); } catch(_) {}
+        const eh = (rt._lxApi && rt._lxApi._eventHandlers) || {};
+        const h = rt._handlers || {};
+        res.json({
+          code: 200,
+          data: {
+            id: rt.id,
+            scriptName: rt.scriptName,
+            initialized: rt.initialized,
+            handlers: {
+              init: typeof h.init,
+              search: typeof h.search,
+              getSongUrl: typeof h.getSongUrl,
+              getMusicUrl: typeof h.getMusicUrl,
+            },
+            eventHandlers: Object.keys(eh).map(k => ({
+              event: k,
+              count: Array.isArray(eh[k]) ? eh[k].length : 0,
+              sample: Array.isArray(eh[k]) && eh[k].length > 0 ? (typeof eh[k][0] === 'function' ? eh[k][0].toString().slice(0, 200) : null) : null
+            })),
+            searchMethodExists: typeof h.search === 'function',
+          }
+        });
+      } else {
+        // 列出所有 runtimes 的摘要
+        const list = sourceMgr.list();
+        const summary = list.map(x => ({
+          id: x.id,
+          name: x.name,
+          enabled: x.enabled,
+          error: x.error,
+          initialized: x.initialized,
+          hasSearch: x._handlers && typeof x._handlers.search === 'function',
+          requestHandlers: x._lxApi && x._lxApi._eventHandlers && x._lxApi._eventHandlers.request ? x._lxApi._eventHandlers.request.length : 0,
+        }));
+        res.json({ code: 200, data: summary });
+      }
+    } catch(e) {
+      res.status(500).json({ code: 500, msg: e.message || String(e) });
+    }
+  });
+
   router.get('/api/source/search', ensure, async (req, res) => {
     try {
       const keyword = String(req.query.keyword || '').trim();
@@ -106,16 +155,20 @@ function buildRouter(sourceMgr) {
       const quality = L.resolveQuality(req.query.quality || '320k');
       const page = Number(req.query.page || 1) || 1;
       const pageSize = Number(req.query.pageSize || 20) || 20;
+      console.log(`[sourceProxy.search] keyword="${keyword}" source="${source}" sourceType="${sourceType}" quality="${quality}" page=${page} pageSize=${pageSize}`);
       if (!keyword) { res.json({ code: 200, data: [] }); return; }
 
       let list;
-      // 如果指定具体 source id，单源；否则并行全部
       if (source && source !== 'all') {
         const rt = sourceMgr.getRuntime(source);
         if (!rt) { res.json({ code: 404, msg: '音源 ' + source + ' 不存在' }); return; }
         try {
           list = await rt.search(keyword, sourceType, quality);
-        } catch(e) { list = []; }
+          console.log(`[sourceProxy.search] rt.search() 返回: ${Array.isArray(list) ? 'array len=' + list.length : typeof list}`);
+        } catch(e) {
+          console.log(`[sourceProxy.search] rt.search() 抛异常: ${e && e.message || e}`);
+          list = [];
+        }
       } else {
         list = await sourceMgr.searchAll(keyword, sourceType, quality, { max: Math.min(60, page * pageSize + 20) });
       }
