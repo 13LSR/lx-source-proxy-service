@@ -25,19 +25,164 @@ class LxRuntime {
 
   async loadFromCode(codeString) {
     try {
-      this._buildSandbox(codeString);
-      this._extractHandlers();
-      this.initialized = true;
-      this.initError = null;
-      return true;
+      // 捕获脚本加载期间的 unhandledRejection（防止脚本异步请求失败炸掉进程）
+      const origUnhandled = process.listeners('unhandledRejection').slice();
+      const handler = (reason) => {
+        console.warn('[lx] VM 内未处理的 Promise rejection（已吞掉防止炸进程）:', reason && reason.message ? reason.message : String(reason).slice(0, 120));
+      };
+      process.on('unhandledRejection', handler);
+      try {
+        this._buildSandbox(codeString);
+        this._extractHandlers();
+        this.initialized = true;
+        this.initError = null;
+        return true;
+      } finally {
+        process.removeListener('unhandledRejection', handler);
+      }
     } catch (e) {
       this.initialized = false;
-      this.initError = (e && e.message) || String(e);
+      this.initError = (e && e.stack) ? e.stack : ((e && e.message) || String(e));
       return false;
     }
   }
 
   _buildSandbox(code) {
+    // 构造 globalThis.lx —— 洛雪音源脚本 API（事件驱动模式）
+    const self = this;
+    const eventHandlers = {}; // eventName -> [handler1, handler2, ...]
+    const initedData = { status: false, sources: {}, openDevTools: false };
+    let metaFromInited = null;
+
+    const lxApi = {
+      EVENT_NAMES: {
+        APP_READY: 'appReady',
+        APP_CLOSE: 'appClose',
+        PLAY_START: 'playStart',
+        PLAY_STOP: 'playStop',
+        PLAY_NEXT: 'playNext',
+        PLAY_PREV: 'playPrev',
+        LYRIC_UPDATE: 'lyricUpdate',
+        SOURCE_CHANGE: 'sourceChange',
+        QUALITY_CHANGE: 'qualityChange',
+        SEARCH_RESULT: 'searchResult',
+        SONG_DETAIL: 'songDetail',
+        SONG_URL: 'songUrl',
+        REQUEST: 'request',
+        INITED: 'inited',
+        UPDATE_ALERT: 'updateAlert',
+        MUSIC_URL: 'musicUrl',
+        // 小写别名（ikun/flower/sixyin 脚本用小写）
+        request: 'request',
+        inited: 'inited',
+        updateAlert: 'updateAlert',
+        musicUrl: 'musicUrl',
+        searchResult: 'searchResult',
+        songDetail: 'songDetail',
+        songUrl: 'songUrl',
+        appReady: 'appReady',
+        appClose: 'appClose',
+        playStart: 'playStart',
+        playStop: 'playStop',
+        playNext: 'playNext',
+        playPrev: 'playPrev',
+        lyricUpdate: 'lyricUpdate',
+        sourceChange: 'sourceChange',
+        qualityChange: 'qualityChange'
+      },
+      on: function(event, handler) {
+        if (!event || typeof handler !== 'function') return;
+        if (!eventHandlers[event]) eventHandlers[event] = [];
+        eventHandlers[event].push(handler);
+      },
+      off: function(event, handler) {
+        if (!eventHandlers[event]) return;
+        eventHandlers[event] = eventHandlers[event].filter(h => h !== handler);
+      },
+      send: function(event, data) {
+        if (event === 'inited' && data) {
+          metaFromInited = data;
+          if (data.sources && typeof data.sources === 'object') {
+            // 脚本自报的源元数据
+            for (const [key, val] of Object.entries(data.sources)) {
+              if (val && val.name === key) {
+                // 记录支持的源
+              }
+            }
+          }
+        }
+        if (!eventHandlers[event]) return;
+        for (const h of eventHandlers[event]) {
+          try { h(data); } catch(_) {}
+        }
+      },
+      request: function(url, options, callback) {
+        if (typeof options === 'function') { callback = options; options = {}; }
+        const opts = options || {};
+        const method = (opts.method || 'GET').toUpperCase();
+        const headers = Object.assign({
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }, opts.headers || {});
+        const timeout = Math.min(Number(opts.timeout) || 30000, 60000);
+        let ctl; let tm;
+        if (typeof global.AbortController !== 'undefined') {
+          ctl = new global.AbortController();
+          tm = setTimeout(() => { try { ctl.abort(); } catch(_) {} }, timeout);
+        }
+        const fetchFn = fetch;
+        const body = (method !== 'GET' && method !== 'HEAD') ? opts.body : undefined;
+        fetchFn(url, { method, headers, body: body ? (typeof body === 'string' ? body : JSON.stringify(body)) : undefined, signal: ctl ? ctl.signal : undefined, redirect: 'follow' })
+          .then(async function(resp) {
+            const txt = await resp.text();
+            const resObj = {
+              body: txt,
+              status: resp.status,
+              statusCode: resp.status,
+              ok: resp.ok,
+              headers: {},
+              contentType: resp.headers ? (resp.headers.get('content-type') || '') : ''
+            };
+            try {
+              if (resp.headers && typeof resp.headers.forEach === 'function') {
+                resp.headers.forEach((v, k) => { resObj.headers[k.toLowerCase()] = v; });
+              }
+              if (resObj.contentType && /json/i.test(resObj.contentType) || /^\s*[\[{]/.test(txt)) {
+                try { resObj.data = JSON.parse(txt); } catch(_) {}
+              }
+            } catch(_) {}
+            if (!resp.ok) {
+              const err = new Error('HTTP ' + resp.status);
+              err.response = resObj;
+              if (callback) callback(err, null);
+            } else {
+              if (callback) callback(null, resObj);
+            }
+          })
+          .catch(function(err) {
+            if (callback) callback(err, null);
+          })
+          .finally(function() { if (tm) clearTimeout(tm); });
+      },
+      utils: {
+        MD5: L.crypto && L.crypto.MD5 ? L.crypto.MD5 : function(s) { return String(s); },
+        quality: L.resolveQuality,
+        http: L.http,
+        fetch: fetch
+      },
+      env: 'desktop',
+      version: '1.0.0',
+      currentScriptInfo: {
+        version: '1.0.0',
+        updateUrl: '',
+        checkUpdate: ''
+      },
+      _eventHandlers: eventHandlers,
+      _initedData: initedData,
+      _metaFromInited: metaFromInited
+    };
+    // 保存引用供 _extractHandlers 使用
+    self._lxApi = lxApi;
+
     const sandbox = {
       console,
       setTimeout,
@@ -67,8 +212,8 @@ class LxRuntime {
       Headers: fetch.Headers,
       L: L,
       QUALITY: L.QUALITY,
+      lx: lxApi,
       require: (name) => {
-        // 只允许引入极少用到且安全的 node 模块
         const allowed = ['url','querystring','path','crypto','buffer'];
         if (allowed.indexOf(name) !== -1) return require(name);
         throw new Error('禁用 require(' + name + ')');
@@ -76,34 +221,29 @@ class LxRuntime {
       module: { exports: {} },
       exports: undefined
     };
+    sandbox.__m__ = sandbox.module;
     sandbox.exports = sandbox.module.exports;
-    vm.createContext(sandbox, { name: 'lx-' + this.id, codeGeneration: { strings: false, wasm: false } });
+    sandbox.module = sandbox.module;
+    sandbox.exports = sandbox.module.exports;
+    vm.createContext(sandbox, { name: 'lx-' + this.id, codeGeneration: { strings: true, wasm: false } });
     const wrapped = '(function(){ "use strict"; var module = __m__, exports = module.exports; ' + code + '\n; return module.exports; }).call(this);';
-    // 使用 runInContext 执行
     const res = vm.runInContext(wrapped, sandbox, {
       timeout: 15000,
       displayErrors: true,
       filename: this.scriptName + '.vm.js'
     });
-    // 兼容写法：有些脚本直接 module.exports = {} ，有些返回对象
     this._moduleExports = res && typeof res === 'object' ? res : sandbox.module.exports;
   }
 
   _extractHandlers() {
     const exp = this._moduleExports || {};
-    // any-listen 协议：
-    //   init(ctx)
-    //   support(url)
-    //   search(keyword, sourceType, quality)
-    //   getSongDetail(song) / getSongUrl(song, quality)
-    //   getLyric(song) / getMusicUrl(...)
-    // 同时兼容老版本 script.xxx 和直接 function 导出
     let target = null;
     if (typeof exp.default === 'object' && exp.default) target = exp.default;
     else if (typeof exp === 'object') target = exp;
     else if (typeof exp === 'function') target = { init: exp };
     if (!target) target = {};
 
+    // 基础 handlers（直接导出模式）
     this._handlers = Object.assign({
       init: null,
       support: null,
@@ -115,6 +255,72 @@ class LxRuntime {
       getHotSearch: null,
       getMusicUrl: null
     }, target);
+
+    // 事件驱动模式：脚本通过 lx.on(EVENT_NAMES.request, handler) 注册
+    // 将注册的 handler 提取出来，包装成 getSongUrl / search 等标准方法
+    const lxApi = this._lxApi;
+    if (lxApi && lxApi._eventHandlers) {
+      const eh = lxApi._eventHandlers;
+      this._eventHandlers = eh; // 保存引用
+
+      // 检查是否注册了 "request" 事件（IKun/Flower/Sixyin 都用这个）
+      const requestHandlers = eh['request'] || [];
+      if (requestHandlers.length > 0) {
+        const self = this;
+        // 包装成 getSongUrl：action = "musicUrl"
+        if (!this._handlers.getSongUrl) {
+          this._handlers.getSongUrl = function(song, quality) {
+            return new Promise((resolve, reject) => {
+              const info = {
+                musicInfo: self._songToLx(song),
+                type: quality
+              };
+              const ctx = { action: 'musicUrl', source: 'all', info };
+              // 找第一个能处理的 handler
+              let idx = 0;
+              const tryNext = () => {
+                if (idx >= requestHandlers.length) {
+                  reject(new Error('无可用 handler 处理 musicUrl'));
+                  return;
+                }
+                const h = requestHandlers[idx++];
+                try {
+                  const ret = h(ctx);
+                  if (ret && typeof ret.then === 'function') {
+                    ret.then(resolve, tryNext);
+                  } else {
+                    resolve(ret);
+                  }
+                } catch(e) {
+                  tryNext();
+                }
+              };
+              tryNext();
+            });
+          };
+        }
+        // 包装成 search：action = "search"
+        if (!this._handlers.search) {
+          this._handlers.search = function(keyword, sourceType, quality) {
+            return new Promise((resolve, reject) => {
+              const info = { keyword, sourceType, quality };
+              const ctx = { action: 'search', source: sourceType || 'all', info };
+              const handler = requestHandlers.find(h => {
+                try { return h && h.toString().includes('search'); } catch(_) { return false; }
+              }) || requestHandlers[0];
+              try {
+                const ret = handler(ctx);
+                if (ret && typeof ret.then === 'function') {
+                  ret.then(resolve, reject);
+                } else {
+                  resolve(Array.isArray(ret) ? ret : []);
+                }
+              } catch(e) { resolve([]); }
+            });
+          };
+        }
+      }
+    }
 
     // 尝试读取 metadata
     if (Array.isArray(target.supportedQualities) && target.supportedQualities.length) this.supportedQualities = target.supportedQualities.slice();

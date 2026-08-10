@@ -189,6 +189,42 @@ function buildRouter(sourceMgr) {
     res.status(ok ? 200 : 503).json({ ok: !!ok, ready: sourceMgr ? sourceMgr.isReady() : false, count: sourceMgr ? sourceMgr.size() : 0 });
   });
 
+  // 调试端点：暴露 RuntimeManager 内部状态（不需要 token，方便排查）
+  router.get('/api/source/debug', (req, res) => {
+    try {
+      const mgr = sourceMgr && sourceMgr.manager;
+      if (!mgr) { res.json({ code: 200, data: { error: 'no manager' } }); return; }
+      const runtimes = [];
+      for (const [id, rt] of mgr.runtimes.entries()) {
+        runtimes.push({
+          id,
+          scriptName: rt.scriptName,
+          enabled: rt.enabled,
+          initialized: rt.initialized,
+          initError: rt.initError ? String(rt.initError).slice(0, 200) : null,
+          hasHandlers: !!(rt._handlers && Object.keys(rt._handlers).length),
+          scriptUrl: rt.scriptUrl
+        });
+      }
+      res.json({
+        code: 200,
+        data: {
+          ready: mgr.ready,
+          readyError: mgr.readyError,
+          loadingPromiseResolved: !!(mgr.loadingPromise && mgr.loadingPromise.isFulfilled),
+          defaultSources: mgr._defaultSources,
+          runtimesSize: mgr.runtimes.size,
+          runtimes,
+          nodeVersion: process.version,
+          fetchAvailable: typeof fetch === 'function',
+          startedAt: new Date(mgr.startedAt).toISOString()
+        }
+      });
+    } catch(e) {
+      res.status(500).json({ code: 500, msg: e && e.message ? e.message : String(e) });
+    }
+  });
+
   return router;
 }
 

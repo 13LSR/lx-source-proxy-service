@@ -24,8 +24,15 @@ class RuntimeManager {
     const urls = (sourceList && sourceList.length) ? sourceList : (this._defaultSources || []);
     if (this.loadingPromise) return this.loadingPromise;
     this.loadingPromise = (async () => {
-      const tasks = urls.map(u => this.addByUrl(String(u)));
-      await Promise.allSettled(tasks);
+      const tasks = urls.map(u => {
+        console.log('[lx] loadAll: queued', u);
+        return this.addByUrl(String(u));
+      });
+      const results = await Promise.allSettled(tasks);
+      console.log('[lx] loadAll: all settled, runtimes.size =', this.runtimes.size);
+      for (const [id, rt] of this.runtimes.entries()) {
+        console.log('[lx]   runtime:', id, 'enabled:', rt.enabled, 'initError:', rt.initError ? String(rt.initError).slice(0, 100) : null);
+      }
       this.ready = true;
       return true;
     })();
@@ -51,18 +58,26 @@ class RuntimeManager {
     return this.loadAll(list);
   }
 
-  // 友好 id：取 URL 文件名去掉扩展名（如 https://x/src/kg.js → "kg"）
+  // 友好 id：取 URL 末两级组合（如 ikun/latest.js → "ikun_latest"），避免同名覆盖
   static friendlyIdFromUrl(url) {
     try {
-      const raw = String(url || '').split('/').pop().split('?')[0];
-      const noExt = raw.replace(/\.(js|ts|mjs|cjs)$/i, '').trim();
-      return noExt || ('src_' + Math.random().toString(36).slice(2, 8));
+      const parts = String(url || '').split('?')[0].split('/').filter(Boolean);
+      if (!parts.length) return 'src_' + Math.random().toString(36).slice(2, 8);
+      const last = parts.pop();
+      const lastNoExt = last.replace(/\.(js|ts|mjs|cjs)$/i, '').trim();
+      if (parts.length > 0) {
+        const parent = parts.pop().replace(/\.(js|ts|mjs|cjs)$/i, '').trim();
+        if (parent && parent !== lastNoExt) return parent + '_' + lastNoExt;
+      }
+      return lastNoExt || ('src_' + Math.random().toString(36).slice(2, 8));
     } catch (_) { return 'src_' + Math.random().toString(36).slice(2, 8); }
   }
 
   // 友好中文 name：按文件名 id 映射到常见音乐源中文名
   static friendlyNameFromId(id, fallbackName) {
-    const i = String(id || '').toLowerCase();
+    const rawId = String(id || '').toLowerCase();
+    // 去掉可能的 _latest 等后缀，取音源名
+    const i = rawId.replace(/_[^_]+$/, '');
     const MAP = {
       'kg': '酷狗(LX)', 'kugou': '酷狗(LX)',
       'tx': 'QQ(LX)', 'qq': 'QQ(LX)', 'qqmusic': 'QQ(LX)',
@@ -79,17 +94,23 @@ class RuntimeManager {
       'ymkg': '秒开酷狗(LX)',
       'ymkw': '秒开酷我(LX)',
       'ymtx': '秒开QQ(LX)',
+      'ikun': 'IKun(LX)',
+      'sixyin': '六音(LX)',
+      'qdy': '全豆要(LX)', 'quandouyao': '全豆要(LX)',
+      'flower': 'Flower(LX)',
     };
     if (MAP[i]) return MAP[i];
+    if (MAP[rawId]) return MAP[rawId];
     if (fallbackName && String(fallbackName).trim()) {
       const fn = String(fallbackName).trim();
-      // 如果 fallbackName 是 xx.js 就去掉扩展名再返回
       return fn.replace(/\.(js|ts|mjs|cjs)$/i, '');
     }
     return id || '扩展音源';
   }
 
   async addByUrl(url) {
+    const friendlyId = RuntimeManager.friendlyIdFromUrl(url);
+    console.log('[lx] addByUrl start:', friendlyId, url);
     try {
       const controller = new AbortController();
       const t = setTimeout(() => { try { controller.abort(); } catch(_) {} }, 15000);
@@ -100,43 +121,48 @@ class RuntimeManager {
         code = await resp.text();
       } finally { clearTimeout(t); }
       if (!code) throw new Error('脚本内容为空');
-      const friendlyId = RuntimeManager.friendlyIdFromUrl(url);
       const rawName = url.split('/').pop().split('?')[0] || url;
       const rt = new LxRuntime({ scriptUrl: url, scriptName: RuntimeManager.friendlyNameFromId(friendlyId, rawName), id: friendlyId });
+      console.log('[lx] addByUrl:', friendlyId, 'fetched, loading into VM...');
       const ok = await rt.loadFromCode(code);
-      if (!ok) return false;
-      // 成功加载后，强制显式打开 enabled + initialized（constructor 默认 enabled=true，但这里做二次保险）
+      console.log('[lx] addByUrl:', friendlyId, 'loadFromCode returned:', ok, 'enabled:', rt.enabled, 'initError:', rt.initError ? String(rt.initError).slice(0, 80) : null);
+      if (!ok) {
+        rt.enabled = false;
+        rt.initialized = false;
+        if (!rt.initError) rt.initError = '脚本加载失败';
+        console.warn('[lx] loadFromCode 失败:', url, '->', rt.initError);
+        this.runtimes.set(rt.id, rt);
+        console.log('[lx] addByUrl:', friendlyId, 'added to runtimes (failed), size:', this.runtimes.size);
+        return false;
+      }
       rt.enabled = true;
       rt.initialized = true;
       rt.initError = null;
-      // 若脚本里提供了 L.song.meta / L.song.name 等元数据，覆盖默认 name（优先脚本自报名字）
       try {
         const h = rt._handlers || null;
         if (h && h.name && typeof h.name === 'string') rt.scriptName = h.name;
         else if (h && h.meta && typeof h.meta.name === 'string') rt.scriptName = h.meta.name;
-        else if (h && typeof h.getQualities === 'function') { /* noop */ }
       } catch(_) {}
-      // 友好 name 映射兜底：如果脚本自报名字还是 "kg.js" 这种，换成中文名
       if (rt.scriptName && /\.(js|ts|mjs|cjs)$/i.test(rt.scriptName)) {
         rt.scriptName = RuntimeManager.friendlyNameFromId(rt.id, rt.scriptName);
       }
-      // 达到上限时，淘汰最久未用的
       if (this.runtimes.size >= this._maxRuntimes) {
         let oldestKey = null; let oldestTs = Infinity;
         for (const [k, v] of this.runtimes.entries()) { if (v.lastUsedAt < oldestTs) { oldestTs = v.lastUsedAt; oldestKey = k; } }
         if (oldestKey) this.runtimes.delete(oldestKey);
       }
       this.runtimes.set(rt.id, rt);
+      console.log('[lx] addByUrl:', friendlyId, 'added to runtimes (success), size:', this.runtimes.size);
       return true;
     } catch(e) {
-      // 记录失败，写一个占位 runtime，status 会把它当错误显示
-      const friendlyId = RuntimeManager.friendlyIdFromUrl(url);
       const rawName = url.split('/').pop().split('?')[0] || url;
       const rt = new LxRuntime({ scriptUrl: url, scriptName: RuntimeManager.friendlyNameFromId(friendlyId, rawName), id: friendlyId });
       rt.initialized = false;
       rt.initError = (e && e.message) || String(e);
       rt.enabled = false;
+      console.warn('[lx] fetch/load 异常:', url, '->', rt.initError);
       this.runtimes.set(rt.id, rt);
+      console.log('[lx] addByUrl:', friendlyId, 'added to runtimes (exception), size:', this.runtimes.size);
       return false;
     }
   }

@@ -7,6 +7,11 @@ const SourceManager = require('./sourceManager.js');
 const buildRouter = require('./routes/sourceProxy.js');
 
 function main() {
+  // 防止 VM 音源脚本里的异步请求失败（如自更新 API 不可达）炸掉整个进程
+  process.on('unhandledRejection', (reason, promise) => {
+    console.warn('[全局] 未处理的 Promise rejection（已吞掉）:', reason && reason.message ? reason.message.slice(0, 120) : String(reason).slice(0, 120));
+  });
+
   const PORT = Number(process.env.PORT) || 3000;
   const LX_TOKEN = process.env.LX_TOKEN || '';
 
