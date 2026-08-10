@@ -207,7 +207,15 @@ class LxRuntime {
       unescape,
       btoa: (s) => Buffer.from(String(s), 'binary').toString('base64'),
       atob: (s) => Buffer.from(String(s), 'base64').toString('binary'),
-      fetch: fetch,
+      fetch: (function(orig) {
+        // 包一层 fetch：所有失败都会 catch，避免冒泡成 unhandledRejection
+        return function safeFetch(input, init) {
+          try {
+            const p = orig.call(this, input, init);
+            return p && typeof p.catch === 'function' ? p.catch(e => Promise.reject(e)) : p;
+          } catch(e) { return Promise.reject(e); }
+        };
+      })(fetch),
       AbortController: global.AbortController,
       Headers: fetch.Headers,
       // 补全 ES6+ 全局对象（混淆/webpack 脚本依赖）

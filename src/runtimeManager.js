@@ -230,8 +230,24 @@ class RuntimeManager {
           rt.getSongUrl(song, q),
           new Promise((_, r) => setTimeout(() => r(new Error('get url timeout')), 15000))
         ]);
-        if (r && r.url) return Object.assign({ quality: q }, r);
+        if (r && r.url) return Object.assign({ quality: q, _origin: 'lx-script' }, r);
       } catch(e) { lastErr = e; }
+    }
+    // LX 脚本全失败 → 用 urlService 兜底（公开源）
+    try {
+      const st = (song && (song.sourceType || song.platform)) ? String(song.sourceType || song.platform).toLowerCase() : 'all';
+      const { getMusicUrl } = require('./urlService.js');
+      const url = await Promise.race([
+        getMusicUrl(st, song, quality),
+        new Promise((_, r) => setTimeout(() => r(new Error('urlService timeout')), 20000)),
+      ]);
+      if (url) return { url, quality, _origin: 'urlService', _lastLxErr: lastErr ? String(lastErr.message || lastErr).slice(0, 300) : null };
+    } catch(uErr) {
+      const msg = [
+        'LX脚本失败:', lastErr ? String(lastErr.message || lastErr).slice(0, 200) : '无',
+        '| URL兜底失败:', uErr ? String(uErr.message || uErr).slice(0, 200) : '无',
+      ].join(' ');
+      throw new Error(msg);
     }
     throw lastErr || new Error('获取播放链接失败');
   }
