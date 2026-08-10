@@ -234,6 +234,8 @@ class LxRuntime {
       Float32Array: global.Float32Array,
       Float64Array: global.Float64Array,
       DataView: global.DataView,
+      Function: global.Function,
+      EvalError: global.EvalError,
       TextEncoder: global.TextEncoder || require('util').TextEncoder,
       TextDecoder: global.TextDecoder || require('util').TextDecoder,
       URL: global.URL,
@@ -291,6 +293,8 @@ class LxRuntime {
     }, target);
 
     // 平台名 → LX 音源脚本 source 标识映射
+    // 注意：IKun/Flower/全豆要 等现代脚本使用全名（netease/qq/kugou/kuwo/migu），
+    //       老脚本可能用两字母缩写（wy/tx/kg/kw/mg），所以 srcCandidates 会同时放两种格式做 fallback
     const platformToLxSource = {
       'qq': 'tx', 'tx': 'tx',
       'kg': 'kg', 'kugou': 'kg',
@@ -298,6 +302,25 @@ class LxRuntime {
       'wy': 'wy', 'netease': 'wy', '163': 'wy',
       'mg': 'mg', 'migu': 'mg',
       'all': 'all'
+    };
+    // LX 标准 2 字母 → 社区脚本常用 全名
+    const lxSourceToFull = {
+      'wy': 'netease', 'tx': 'qq',
+      'kg': 'kugou', 'kw': 'kuwo', 'mg': 'migu'
+    };
+    const fullSourceForms = (s) => {
+      // 返回给定 source 的所有可能格式（去重）
+      const forms = new Set();
+      if (!s) return forms;
+      const x = String(s).toLowerCase();
+      forms.add(x);
+      if (platformToLxSource[x]) forms.add(platformToLxSource[x]);
+      if (lxSourceToFull[x]) forms.add(lxSourceToFull[x]);
+      // 反向：如果 x 是全名，也加入缩写
+      for (const [full, abbr] of Object.entries(lxSourceToFull)) {
+        if (x === abbr) forms.add(full);
+      }
+      return forms;
     };
     const normalizeSource = (s) => {
       const k = String(s || '').trim().toLowerCase();
@@ -343,9 +366,17 @@ class LxRuntime {
               const songLike = self._songToLx(song);
               const rawSrc = songLike.sourceType || songLike.platform || '';
               const lxSource = normalizeSource(rawSrc);
-              const info = { musicInfo: songLike, type: quality };
-              const srcCandidates = [lxSource, 'tx', 'wy', 'kw', 'kg', 'mg', 'git', 'all']
-                .filter(Boolean).filter((v, i, a) => a.indexOf(v) === i);
+              // 双格式候选：先全名（IKun/Flower 用 netease/qq 等），再缩写（老脚本 wy/tx 等）
+              const formSet = new Set();
+              const addForm = (s) => { for (const f of fullSourceForms(s)) formSet.add(f); };
+              addForm(lxSource);
+              ['qq', 'netease', 'kugou', 'kuwo', 'migu', 'all', 'git'].forEach(addForm);
+              const srcCandidates = Array.from(formSet);
+
+              const info = (src) => {
+                // info.sourceType 也要放匹配当前 src 的格式（IKun/Flower 常用全名）
+                return { musicInfo: songLike, type: quality, sourceType: src };
+              };
 
               // 合并两种 handler：直接 musicUrl handler + request 模式 handler
               const allHandlers = [
@@ -359,9 +390,10 @@ class LxRuntime {
                 if (sIdx >= srcCandidates.length) { hIdx++; sIdx = 0; tryNext(); return; }
                 const { h, mode } = allHandlers[hIdx];
                 const src = srcCandidates[sIdx++];
+                const myInfo = info(src);
                 const ctx = mode === 'direct'
-                  ? { ...info, source: src }
-                  : { action: 'musicUrl', source: src, info };
+                  ? { ...myInfo, source: src }
+                  : { action: 'musicUrl', source: src, info: myInfo };
                 try {
                   const ret = h(ctx);
                   const finish = (r) => { if (hasValidUrl(r)) resolve(r); else tryNext(); };
@@ -379,9 +411,17 @@ class LxRuntime {
           this._handlers.search = function(keyword, sourceType, quality) {
             return new Promise((resolve, reject) => {
               const lxSource = normalizeSource(sourceType);
-              const info = { keyword, sourceType: lxSource, quality };
-              const srcCandidates = [lxSource, 'tx', 'wy', 'kw', 'kg', 'mg', 'all']
-                .filter(Boolean).filter((v, i, a) => a.indexOf(v) === i);
+              // 双格式候选：先全名（IKun/Flower 用 netease/qq 等），再缩写（老脚本 wy/tx 等）
+              const formSet = new Set();
+              const addForm = (s) => { for (const f of fullSourceForms(s)) formSet.add(f); };
+              addForm(lxSource);
+              ['qq', 'netease', 'kugou', 'kuwo', 'migu', 'all'].forEach(addForm);
+              const srcCandidates = Array.from(formSet);
+
+              const makeInfo = (src) => {
+                // info.sourceType 也用当前候选格式（IKun/Flower 认全名）
+                return { keyword, sourceType: src, quality };
+              };
 
               // 合并两种 handler：直接 search handler + request 模式 handler
               const allHandlers = [
@@ -423,11 +463,12 @@ class LxRuntime {
                 if (sIdx >= srcCandidates.length) { hIdx++; sIdx = 0; tryNext(); return; }
                 const { h, mode } = allHandlers[hIdx];
                 const trySrc = srcCandidates[sIdx++];
+                const myInfo = makeInfo(trySrc);
                 const ctx = mode === 'direct'
-                  ? { ...info, source: trySrc }
-                  : { action: 'search', source: trySrc, info };
+                  ? { ...myInfo, source: trySrc }
+                  : { action: 'search', source: trySrc, info: myInfo };
                 totalAttempts++;
-                console.log(`[lx-search-wrap] → [${mode}] handler#${hIdx} source="${trySrc}"`);
+                console.log(`[lx-search-wrap] → [${mode}] handler#${hIdx} source="${trySrc}" info.sourceType="${myInfo.sourceType}"`);
                 try {
                   const ret = h(ctx);
                   const finish = (r) => {
